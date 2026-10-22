@@ -1,0 +1,14 @@
+{
+  "name": "tiktok-like-fire-overlay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TikTok LIVE のいいねで炎が大きくなるオーバーレイ",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "tiktok-live-connector": "latest",
+    "ws": "^8.18.0"
+  }
+}

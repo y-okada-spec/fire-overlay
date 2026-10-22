@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Like Fire Overlay</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: transparent;
+    font-family: "Arial Black", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+  }
+  body.test { background: #111; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hud {
+    position: absolute; left: 50%; bottom: 4%;
+    transform: translateX(-50%);
+    text-align: center; color: #fff; pointer-events: none;
+    text-shadow: 0 0 6px #000, 0 0 12px #ff5a00;
+  }
+  #level { font-size: 6vmin; letter-spacing: .05em; }
+  #count { font-size: 4vmin; opacity: .9; }
+  #bar {
+    width: 40vmin; height: 1.6vmin; margin: 1vmin auto 0;
+    background: rgba(0,0,0,.45); border-radius: 1vmin; overflow: hidden;
+    border: 2px solid rgba(255,255,255,.6);
+  }
+  #barFill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #ffd000, #ff6a00, #ff1e00);
+    transition: width .15s linear;
+  }
+  #status {
+    position: absolute; top: 8px; left: 8px; color: #fff; font: 12px sans-serif;
+    background: rgba(0,0,0,.5); padding: 4px 8px; border-radius: 4px;
+    display: none;
+  }
+  body.test #status { display: block; }
+  .pop {
+    position: absolute; color: #fff; font-size: 3.2vmin; pointer-events: none;
+    text-shadow: 0 0 4px #000; white-space: nowrap;
+    animation: pop 1.6s ease-out forwards;
+  }
+  @keyframes pop {
+    from { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    to   { opacity: 0; transform: translate(-50%, -18vmin) scale(1.2); }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div id="level">🔥 Lv.1</div>
+  <div id="count">❤ 0</div>
+  <div id="bar"><div id="barFill"></div></div>
+</div>
+<div id="status">テストモード：クリック / スペースキーでいいね</div>
+<script>
+(() => {
+  // ===== 設定（URLパラメータで変更可） =====
+  const q = new URLSearchParams(location.search);
+  const CFG = {
+    perLike: +q.get('perLike') || 1,      // いいね1回で増える熱量
+    max: +q.get('max') || 300,            // 最大火力に必要な熱量
+    decay: +(q.get('decay') ?? 4),        // 1秒あたりに冷める熱量
+    levels: +q.get('levels') || 10,       // レベル段階数
+    showNames: q.get('names') !== '0',    // いいねした人の名前を表示
+    hud: q.get('hud') !== '0',            // 下部のレベル表示
+    test: q.has('test'),                  // テストモード（クリックでいいね）
+    ws: q.get('ws') || `ws://${location.hostname || 'localhost'}:${location.port || 8080}`,
+  };
+  if (CFG.test) document.body.classList.add('test');
+  if (!CFG.hud) document.getElementById('hud').style.display = 'none';
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  addEventListener('resize', resize); resize();
+
+  // ===== 状態 =====
+  let heat = 0;        // 現在の熱量
+  let shown = 0;       // 表示用（なめらかに追従）
+  let totalLikes = 0;
+  let flash = 0;       // いいね時のフラッシュ
+  const BASE_Y = 0.74; // 炎の根元の高さ（画面比）
+  const particles = [];
+  const sparks = [];
+
+  function addLikes(n, name) {
+    n = Math.max(1, n | 0);
+    totalLikes += n;
+    heat = Math.min(CFG.max * 1.2, heat + n * CFG.perLike);
+    flash = Math.min(1, flash + 0.15 + n * 0.03);
+    for (let i = 0; i < Math.min(40, 4 + n * 2); i++) spawnSpark(true);
+    if (name && CFG.showNames) popText(`${name} ❤×${n}`);
+  }
+  window.addLikes = addLikes; // デバッグ用
+
+  function popText(text) {
+    const el = document.createElement('div');
+    el.className = 'pop';
+    el.textContent = text;
+    el.style.left = (35 + Math.random() * 30) + '%';
+    el.style.top = (55 + Math.random() * 15) + '%';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 1700);
+  }
+
+  // 0..1 の火力
+  const power = () => Math.min(1, shown / CFG.max);
+
+  function spawnFlame() {
+    const p = power();
+    const baseW = W * (0.06 + p * 0.28);
+    const size = Math.min(W, H) * (0.035 + p * 0.09) * (0.6 + Math.random() * 0.6);
+    particles.push({
+      x: W / 2 + (Math.random() - 0.5) * baseW,
+      y: H * BASE_Y + Math.random() * 10,
+      vx: (Math.random() - 0.5) * 0.6,
+      vy: -(1.2 + Math.random() * 1.5) * (1 + p * 2.2) * (H / 900),
+      r: size,
+      life: 1,
+      decay: 0.012 + Math.random() * 0.012 - p * 0.004,
+    });
+  }
+
+  function spawnSpark(burst) {
+    const p = power();
+    sparks.push({
+      x: W / 2 + (Math.random() - 0.5) * W * (0.05 + p * 0.25),
+      y: H * BASE_Y,
+      vx: (Math.random() - 0.5) * (burst ? 6 : 2),
+      vy: -(2 + Math.random() * (burst ? 8 : 4)) * (H / 900) * (1 + p),
+      life: 1,
+      decay: 0.01 + Math.random() * 0.02,
+      r: 1 + Math.random() * 2.5,
+    });
+  }
+
+  // 炎の色（life: 1=根元 → 0=先端）
+  function flameColor(life, a) {
+    let r, g, b;
+    if (life > 0.85)      { r = 255; g = 230; b = 150; }
+    else if (life > 0.6)  { r = 255; g = 170; b = 40; }
+    else if (life > 0.3)  { r = 255; g = 90;  b = 10; }
+    else                  { r = 200; g = 30;  b = 10; }
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  const LEVEL_NAMES = ['', 'ちろちろ', 'ぽかぽか', 'メラメラ', 'ボウボウ', 'ゴウゴウ',
+                       '大炎上', '業火', '灼熱', '爆炎', '🔥MAX🔥'];
+  const levelEl = document.getElementById('level');
+  const countEl = document.getElementById('count');
+  const barEl = document.getElementById('barFill');
+  let lastLevel = 0;
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+
+    heat = Math.max(0, heat - CFG.decay * dt);
+    shown += (heat - shown) * Math.min(1, dt * 4);
+    flash = Math.max(0, flash - dt * 1.5);
+    const p = power();
+
+    // 粒子生成
+    const rate = 3 + p * 22 + flash * 10;
+    for (let i = 0; i < rate; i++) spawnFlame();
+    if (Math.random() < 0.15 + p * 0.8) spawnSpark(false);
+
+    ctx.clearRect(0, 0, W, H);
+
+    // 根元のグロー
+    const glowR = Math.min(W, H) * (0.12 + p * 0.35 + flash * 0.08);
+    const g = ctx.createRadialGradient(W / 2, H * BASE_Y, 0, W / 2, H * BASE_Y, glowR);
+    g.addColorStop(0, `rgba(255,140,30,${0.35 + p * 0.3 + flash * 0.2})`);
+    g.addColorStop(1, 'rgba(255,60,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const f = particles[i];
+      // 中央に寄せて炎の形にする
+      f.vx += (W / 2 - f.x) * 0.0015 * (1.2 - f.life) + (Math.random() - 0.5) * 0.3;
+      f.x += f.vx; f.y += f.vy;
+      f.life -= f.decay;
+      if (f.life <= 0) { particles.splice(i, 1); continue; }
+      const r = f.r * (0.4 + f.life * 0.8);
+      const grad = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+      grad.addColorStop(0, flameColor(f.life, 0.4 * f.life / (1 + p * 1.8)));
+      grad.addColorStop(1, flameColor(f.life, 0));
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.vx *= 0.98; s.vy += 0.03; s.vx += (Math.random() - 0.5) * 0.4;
+      s.x += s.vx; s.y += s.vy;
+      s.life -= s.decay;
+      if (s.life <= 0) { sparks.splice(i, 1); continue; }
+      ctx.fillStyle = `rgba(255,${180 + 70 * s.life | 0},80,${s.life})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // HUD
+    const level = Math.max(1, Math.min(CFG.levels, Math.ceil(p * CFG.levels) || 1));
+    const name = CFG.levels === 10 ? ` ${LEVEL_NAMES[level]}` : '';
+    if (level !== lastLevel) {
+      levelEl.textContent = `🔥 Lv.${level}${name}`;
+      if (level > lastLevel && lastLevel) {
+        levelEl.animate([{ transform: 'scale(1.5)' }, { transform: 'scale(1)' }], { duration: 400 });
+      }
+      lastLevel = level;
+    }
+    countEl.textContent = `❤ ${totalLikes.toLocaleString()}`;
+    barEl.style.width = (p * 100).toFixed(1) + '%';
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ===== テストモード =====
+  const statusEl = document.getElementById('status');
+  if (CFG.test) {
+    addEventListener('pointerdown', () => addLikes(1, 'テスト'));
+    addEventListener('keydown', e => {
+      if (e.code === 'Space') addLikes(1, 'テスト');
+      if (e.key === 'b') addLikes(15, '連打さん');
+    });
+  }
+
+  // ===== 中継サーバーとの接続 =====
+  function connect() {
+    let ws;
+    try { ws = new WebSocket(CFG.ws); } catch { return setTimeout(connect, 3000); }
+    ws.onopen = () => { statusEl.textContent = `接続中: ${CFG.ws}` + (CFG.test ? '（クリックでもいいね可）' : ''); };
+    ws.onmessage = ev => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'like') addLikes(msg.count, msg.name);
+      if (msg.type === 'status') statusEl.textContent = msg.text;
+    };
+    ws.onclose = () => setTimeout(connect, 3000);
+  }
+  if (location.protocol.startsWith('http') || q.has('ws')) connect();
+})();
+</script>
+</body>
+</html>
